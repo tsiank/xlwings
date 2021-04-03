@@ -24,6 +24,7 @@ from win32com.client import Dispatch
 
 from . import conversion, xlplatform, Range, apps, Book, PRO, LicenseError
 from .utils import VBAWriter, exception
+from .event_dispatcher import EventDispatcher
 
 if PRO:
     from .pro.embedded_code import dump_embedded_code, get_udf_temp_dir
@@ -214,6 +215,16 @@ def xlarg(arg, convert=None, **kwargs):
         return f
     return inner
 
+def xlevent( event_name):
+    def inner(f):
+        EventDispatcher.register_callback(event_name, f)
+        return f
+    return inner
+
+
+def xleventexc(f):
+    EventDispatcher.register_exception_callback(f)
+    return f
 
 udf_modules = {}
 

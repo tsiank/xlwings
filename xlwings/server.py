@@ -20,6 +20,8 @@ os.chdir(cwd)
 
 import pythoncom
 import pywintypes
+import traceback
+import win32con
 import win32com.client
 import win32com.server.util as serverutil
 import win32com.server.dispatcher
@@ -28,7 +30,13 @@ import win32com.server.policy
 import asyncio
 import threading
 
-from .udfs import call_udf
+from .event_dispatcher import EventDispatcher
+from .udfs import call_udf, get_udf_module
+from . import xlplatform
+
+
+# Global variables
+main_thread_id = win32api.GetCurrentThreadId()
 
 
 # If no handler is configured, print is used to make the statements show up in the console that opens when using
@@ -108,7 +116,7 @@ def ToVariant(obj):
 class XLPython:
     _public_methods_ = ['Module', 'Tuple', 'TupleFromArray', 'Dict', 'DictFromArray', 'List', 'ListFromArray', 'Obj',
                         'Str', 'Var', 'Call', 'GetItem', 'SetItem', 'DelItem', 'Contains', 'GetAttr', 'SetAttr',
-                        'DelAttr', 'HasAttr', 'Eval', 'Exec', 'ShowConsole', 'Builtin', 'Len', 'Bool',
+                        'DelAttr', 'HasAttr', 'Eval', 'Exec', 'ShowConsole', 'Builtin', 'Len', 'Bool', 'Event',
                         'CallUDF']
 
     def ShowConsole(self):
@@ -195,12 +203,29 @@ class XLPython:
 
     def CallUDF(self, script, fname, args, this_workbook=None, caller=None):
         args = tuple(FromVariant(arg) for arg in args)
-        res = call_udf(script, fname, args, this_workbook, FromVariant(caller))
-        if len(res) == 1 and len(res[0]) == 1:
-            res = res[0][0]
-        elif len(res) == 1 and len(res[0]) > 1:
-            res = res[0]
-        return res
+        # this_workbook can be None
+        xlplatform.BOOK_CALLER = this_workbook and win32com.client.Dispatch(this_workbook)
+        xl_app = xlplatform.BOOK_CALLER and xlplatform.BOOK_CALLER.Application
+        prev_enable_events = xl_app and xl_app.EnableEvents
+        if prev_enable_events:
+            xl_app.EnableEvents = False
+        try:
+            res = call_udf(script, fname, args, this_workbook, FromVariant(caller))
+            if len(res) == 1 and len(res[0]) == 1:
+                res = res[0][0]
+            elif len(res) == 1 and len(res[0]) > 1:
+                res = res[0]
+            return res
+        except Exception as exc:
+            udf_module = get_udf_module(script, this_workbook)
+            func = getattr(udf_module, fname)
+            is_xlfunc = not func.__xlfunc__['sub']
+            self._TraceExc(exc, xl_app=None if is_xlfunc else xl_app)
+            if is_xlfunc:
+                raise  # Reraise if obj is a xlfunc (handled correctly by upper layers)
+        finally:
+            if prev_enable_events is not None:
+                xl_app.EnableEvents = prev_enable_events
 
     def Len(self, obj):
         obj = FromVariant(obj)
@@ -285,6 +310,38 @@ class XLPython:
                 pass
         exec(stmt, globals, locals)
 
+    def Event(self, event_name, args, this_workbook, caller):
+        pargs = tuple(FromVariant(arg) for arg in args)
+        # this_workbook can be None
+        xlplatform.BOOK_CALLER = this_workbook and win32com.client.Dispatch(this_workbook)
+        xl_app = xlplatform.BOOK_CALLER and xlplatform.BOOK_CALLER.Application
+        prev_enable_events = xl_app and xl_app.EnableEvents
+        if prev_enable_events:
+            xl_app.EnableEvents = False
+        try:
+            EventDispatcher.dispatch(event_name, *pargs)
+        finally:
+            if prev_enable_events is not None:
+                xl_app.EnableEvents = prev_enable_events
+        if event_name == 'AddinBeforeQuit':
+            win32api.PostThreadMessage(main_thread_id, win32con.WM_QUIT, 0, 0)
+
+    def _TraceExc(self, exc, xl_app=None):
+        for exc_line in traceback.format_exc().splitlines():
+            logger.error(exc_line)
+        if xl_app:
+            exc_type = type(exc)
+            title = exc_type.__name__
+            if exc_type is pywintypes.com_error:
+                if isinstance(exc[2], tuple):
+                    com_error_info = exc[2]
+                    title = com_error_info[1]
+                    msg = com_error_info[2]
+                else:
+                    msg = exc[1]
+            else:
+                msg = str(exc)
+            win32api.MessageBox(xl_app.Hwnd, msg, title, win32con.MB_ICONERROR)
 
 loop = asyncio.new_event_loop()
 

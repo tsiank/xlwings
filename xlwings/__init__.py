@@ -35,7 +35,7 @@ except (ImportError, LicenseError):
 
 # UDFs
 if sys.platform.startswith('win'):
-    from .udfs import xlfunc as func, xlsub as sub, xlret as ret, xlarg as arg, get_udf_module, import_udfs
+    from .udfs import xlfunc as func, xlsub as sub, xlret as ret, xlarg as arg, xlevent as event, xleventexc as eventexc, get_udf_module, import_udfs
     # This generates the modules for early-binding under %TEMP%\gen_py\3.x
     # generated via makepy.py -i, but using an old minor=2, as it still seems to generate the most recent version of it
     # whereas it would fail if the minor is higher than what exists on the machine. Allowing it to fail silently, as
@@ -64,6 +64,16 @@ else:
         else:
             return inner(f)
 
+    def event(*args, **kwargs):
+        def inner(f):
+            return f
+        return inner
+
+    def eventexc(*args, **kwargs):
+        def inner(f):
+            return f
+        return inner
+
     def ret(*args, **kwargs):
         def inner(f):
             return f
@@ -73,6 +83,12 @@ else:
         def inner(f):
             return f
         return inner
+
+# Events
+from .event_dispatcher import EventDispatcher, EventHandler
+
+# Object cache
+from .object_cache import return_cached_object, use_cached_object, use_cached_object_list
 
 # Server
 if sys.platform.startswith('win'):
